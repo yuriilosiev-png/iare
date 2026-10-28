@@ -1,1 +1,64 @@
+rules_version = '2';
 
+// IARE — правила доступа к базе. Шаг 1: сотрудники и точки.
+// Вставляются в Firebase: Firestore Database → вкладка Rules → Publish.
+// Всё, что не разрешено явно, запрещено.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function staffPath() {
+      return /databases/$(database)/documents/staff/$(request.auth.uid);
+    }
+
+    // Активный сотрудник: есть профиль и он не отключён.
+    function isStaff() {
+      return signedIn() && exists(staffPath()) && get(staffPath()).data.active == true;
+    }
+
+    function isChief() {
+      return isStaff() && get(staffPath()).data.role == 'chief';
+    }
+
+    // ---------- Сотрудники ----------
+    match /staff/{uid} {
+      // Свой профиль виден всегда (нужно для проверки при входе),
+      // профили коллег — только активным сотрудникам.
+      allow read: if signedIn() && (request.auth.uid == uid || isStaff());
+
+      // Добавлять сотрудников может только главный администратор,
+      // и только администраторов и мастеров. Главного назначают вручную в консоли.
+      allow create: if isChief()
+        && request.resource.data.keys().hasAll(['nick', 'name', 'role', 'branch', 'active'])
+        && request.resource.data.role in ['admin', 'master']
+        && request.resource.data.nick is string
+        && request.resource.data.name is string
+        && request.resource.data.branch is string
+        && request.resource.data.active == true;
+
+      // Менять (сейчас — включать и отключать) может только главный,
+      // не себя, и без смены роли и ника.
+      allow update: if isChief()
+        && uid != request.auth.uid
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.nick == resource.data.nick;
+
+      allow delete: if false;
+    }
+
+    // ---------- Точки ----------
+    match /branches/{id} {
+      allow read: if isStaff();
+      allow write: if isChief();
+    }
+
+    // ---------- Всё остальное закрыто ----------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
